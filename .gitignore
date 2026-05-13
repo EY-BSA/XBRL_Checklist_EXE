@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# PyInstaller 빌드 결과물
+dist/
+build/
+*.manifest
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# 엑셀 임시 파일 (열려 있을 때 생성되는 잠금 파일)
+~$*.xlsx
+~$*.xls
