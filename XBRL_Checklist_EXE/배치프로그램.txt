@@ -1,0 +1,26 @@
+@echo off
+chcp 65001 >nul
+echo ================================================
+echo  XBRL CoE Checklist 1-1  빌드 시작
+echo ================================================
+
+echo [1/2] 패키지 설치 중...
+python -m pip install pandas openpyxl pyinstaller
+if %errorlevel% neq 0 (
+    echo 패키지 설치 실패. Python 설치를 확인하세요.
+    pause
+    exit /b 1
+)
+
+echo [2/2] PyInstaller 빌드 중...
+python -m PyInstaller build.spec --clean
+if %errorlevel% neq 0 (
+    echo 빌드 실패.
+    pause
+    exit /b 1
+)
+
+echo.
+echo 빌드 완료!
+echo 결과물: dist\XBRL_Checklist_1_1\XBRL_Checklist_1_1.exe
+pause
