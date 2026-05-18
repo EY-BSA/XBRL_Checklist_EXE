@@ -104,6 +104,12 @@ def write_result(result: CheckResult, data, output_path: str):
     with zipfile.ZipFile(TEMPLATE_PATH, 'r') as tmpl_zip, \
          zipfile.ZipFile(buf, 'r') as mod_zip:
         mod_names = set(mod_zip.namelist())
+
+        # 템플릿 worksheet XML에서 <drawing> 참조 태그 추출
+        # openpyxl은 저장 시 이 태그를 제거하므로, 나중에 다시 주입해야 도형이 유지됨
+        tmpl_sheet_raw = tmpl_zip.read(target_xml)
+        drawing_tags = re.findall(rb'<drawing[^>]*/>', tmpl_sheet_raw)
+
         with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as out_zip:
             for info in tmpl_zip.infolist():
                 # calcChain 제거: B11을 정적 값으로 교체해 수식 구조가 바뀌었으므로
@@ -113,6 +119,10 @@ def write_result(result: CheckResult, data, output_path: str):
                 raw = tmpl_zip.read(info.filename)
                 if info.filename in preserve_from_modified and info.filename in mod_names:
                     raw = mod_zip.read(info.filename)
+                    # openpyxl이 제거한 <drawing> 참조를 워크시트 XML에 복원
+                    if info.filename == target_xml and drawing_tags:
+                        inject = b''.join(drawing_tags)
+                        raw = raw.replace(b'</worksheet>', inject + b'</worksheet>')
                 # [Content_Types].xml 에서 calcChain Override 항목 제거
                 if info.filename == '[Content_Types].xml':
                     raw = re.sub(rb'<Override[^>]*calcChain[^>]*/>', b'', raw)
