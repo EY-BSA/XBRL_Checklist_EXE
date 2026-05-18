@@ -418,11 +418,13 @@ def _c2_4(rows, data):
         'CurrentInventoriesInTransit이 아닌 경우 검출합니다.',
         '텍사노미 검토', 'Checklist_2-4')
     for row in rows:
-        if row.get('TABLE_NUMBER') not in INVENTORY_NEW_TABLES:
+        table_num = row.get('TABLE_NUMBER', '')
+        if not ('D826380' in table_num or 'D826385' in table_num):
             continue
-        if '미착' not in row.get('Label(KO)', ''):
+        labelko = row.get('Label(KO)', '')
+        if '미착' not in labelko:
             continue
-        if 'CurrentInventoriesInTransit' not in row.get('Label(EN)', ''):
+        if 'CurrentInventoriesInTransit' in labelko:
             r.issues.append(_mk(row, '미착품 → CurrentInventoriesInTransit 사용 필요', data))
     return r
 

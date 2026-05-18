@@ -66,6 +66,21 @@ def _find_sheet_xml(xlsx_path: str, sheet_name: str) -> str:
     return f'xl/worksheets/{target_m.group(1)}'
 
 
+_DRAWING_PAT = re.compile(rb'<(?:legacyDrawing|drawing)[^>]*/>')
+
+
+def _write_standard_row(ws, ri: int, iss):
+    ws.cell(ri, 2, _role_def(iss))
+    ws.cell(ri, 3, _table_name(iss))
+    ws.cell(ri, 4, iss.prefix)
+    ws.cell(ri, 5, iss.element_name)
+    ws.cell(ri, 6, iss.label_ko)
+    ws.cell(ri, 7, iss.label_en)
+    ws.cell(ri, 8, iss.label_role)
+    ws.cell(ri, 9, iss.data_type)
+    ws.cell(ri, 10, iss.period)
+
+
 def _write_sheet(ws, result: CheckResult):
     """openpyxl worksheet 객체에 검증 결과를 기록한다."""
     if ws.max_row >= 14:
@@ -73,16 +88,17 @@ def _write_sheet(ws, result: CheckResult):
             for cell in row:
                 cell.value = None
 
+    chk_id = result.check_id
     for ri, iss in enumerate(result.issues, 14):
-        ws.cell(ri, 2, _role_def(iss))
-        ws.cell(ri, 3, _table_name(iss))
-        ws.cell(ri, 4, iss.prefix)
-        ws.cell(ri, 5, iss.element_name)
-        ws.cell(ri, 6, iss.label_ko)
-        ws.cell(ri, 7, iss.label_en)
-        ws.cell(ri, 8, iss.label_role)
-        ws.cell(ri, 9, iss.data_type)
-        ws.cell(ri, 10, iss.period)
+        if chk_id == '5-6':
+            ws.cell(ri, 2, _table_name(iss))
+            ws.cell(ri, 3, '단위미표시')
+        elif chk_id == '7-1':
+            _write_standard_row(ws, ri, iss)
+            ws.cell(ri, 11, iss.dart_negate)
+            ws.cell(ri, 12, iss.client_negate)
+        else:
+            _write_standard_row(ws, ri, iss)
 
     ws['B11'] = result.issue_count
 
@@ -104,18 +120,17 @@ def write_all_results(results: dict, output_path: str):
     wb.save(buf)
     buf.seek(0)
 
-    # Step 2: 수정된 시트 XML 목록 수집 (그리기/그림 복원 위해 템플릿 drawing 태그 보존)
-    modified_xmls: dict[str, list] = {}  # xml_path → drawing_tags
-    for check_id, result in results.items():
-        try:
-            xml_path = _find_sheet_xml(TEMPLATE_PATH, result.sheet)
-        except KeyError:
-            continue
-        with zipfile.ZipFile(TEMPLATE_PATH, 'r') as z:
+    # Step 2: 수정된 시트 XML 목록 수집 (drawing/legacyDrawing 태그 복원용)
+    modified_xmls: dict[str, list] = {}  # xml_path → [drawing tag bytes, ...]
+    with zipfile.ZipFile(TEMPLATE_PATH, 'r') as tmpl_zip:
+        for check_id, result in results.items():
             try:
-                raw = z.read(xml_path)
-                tags = re.findall(rb'<drawing[^>]*/>', raw)
-                modified_xmls[xml_path] = tags
+                xml_path = _find_sheet_xml(TEMPLATE_PATH, result.sheet)
+            except KeyError:
+                continue
+            try:
+                raw = tmpl_zip.read(xml_path)
+                modified_xmls[xml_path] = _DRAWING_PAT.findall(raw)
             except KeyError:
                 modified_xmls[xml_path] = []
 
@@ -132,14 +147,19 @@ def write_all_results(results: dict, output_path: str):
                 raw = tmpl_zip.read(info.filename)
                 if info.filename in preserve_from_modified and info.filename in mod_names:
                     raw = mod_zip.read(info.filename)
-                    # openpyxl이 drawing 태그를 제거한 경우에만 복원 (중복 방지)
+                    # openpyxl이 drawing/legacyDrawing 태그를 제거한 경우에만 복원 (중복 방지)
                     if info.filename in modified_xmls:
                         drawing_tags = modified_xmls[info.filename]
-                        if drawing_tags and not re.search(rb'<drawing\b', raw):
+                        if drawing_tags and not _DRAWING_PAT.search(raw):
                             inject = b''.join(drawing_tags)
-                            if b'xmlns:r=' not in raw[:raw.find(b'>', raw.find(b'<worksheet'))]:
+                            ws_tag_end = raw.find(b'>', raw.find(b'<worksheet'))
+                            if b'xmlns:r=' not in raw[:ws_tag_end]:
                                 ns = b' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
-                                inject = inject.replace(b'<drawing ', b'<drawing' + ns + b' ')
+                                inject = re.sub(
+                                    rb'<((?:legacyDrawing|drawing)) ',
+                                    rb'<\1' + ns + rb' ',
+                                    inject
+                                )
                             raw = raw.replace(b'</worksheet>', inject + b'</worksheet>')
                 if info.filename == '[Content_Types].xml':
                     raw = re.sub(rb'<Override[^>]*calcChain[^>]*/>', b'', raw)
