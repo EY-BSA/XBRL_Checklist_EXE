@@ -45,16 +45,27 @@ def _table_name(iss) -> str:
 def _find_sheet_xml(xlsx_path: str, sheet_name: str) -> str:
     """템플릿 xlsx에서 시트 이름에 해당하는 worksheet XML 경로 반환."""
     with zipfile.ZipFile(xlsx_path, 'r') as z:
-        wb_xml  = z.read('xl/workbook.xml').decode('utf-8')
+        wb_xml   = z.read('xl/workbook.xml').decode('utf-8')
         rels_xml = z.read('xl/_rels/workbook.xml.rels').decode('utf-8')
-    m = re.search(rf'<sheet[^>]+name="{re.escape(sheet_name)}"[^>]+r:id="([^"]+)"', wb_xml)
+
+    # <sheet> 태그에서 name 속성으로 r:id 추출 (속성 순서 무관)
+    escaped = re.escape(sheet_name)
+    m = re.search(rf'<sheet\b[^>]*\bname="{escaped}"[^>]*/>', wb_xml)
     if not m:
         raise KeyError(f'workbook.xml에서 시트 찾기 실패: {sheet_name}')
-    rid = m.group(1)
-    m2 = re.search(rf'Id="{re.escape(rid)}"[^>]+Target="worksheets/([^"]+)"', rels_xml)
+    rid_m = re.search(r'r:id="([^"]+)"', m.group(0))
+    if not rid_m:
+        raise KeyError(f'<sheet> 태그에서 r:id 추출 실패: {sheet_name}')
+    rid = rid_m.group(1)
+
+    # rels 파일에서 Target 추출 (속성 순서 무관)
+    m2 = re.search(rf'<Relationship\b[^>]*\bId="{re.escape(rid)}"[^>]*/>', rels_xml)
     if not m2:
         raise KeyError(f'workbook.xml.rels에서 rId 찾기 실패: {rid}')
-    return f'xl/worksheets/{m2.group(1)}'
+    target_m = re.search(r'Target="worksheets/([^"]+)"', m2.group(0))
+    if not target_m:
+        raise KeyError(f'<Relationship> 태그에서 Target 추출 실패: {rid}')
+    return f'xl/worksheets/{target_m.group(1)}'
 
 
 def write_result(result: CheckResult, data, output_path: str):
@@ -96,10 +107,11 @@ def write_result(result: CheckResult, data, output_path: str):
     buf.seek(0)
 
     # Step 2: 템플릿 기반으로 출력 파일 구성
-    # openpyxl 출력에서 가져올 파일: 수정된 시트 XML + sharedStrings
-    # 나머지(LEAD 시트, drawing, media, styles 등)는 템플릿 원본 사용
+    # openpyxl 출력에서 가져올 파일: 수정된 시트 XML + sharedStrings + styles
+    # styles.xml도 openpyxl 버전 사용 → 시트 XML의 스타일 ID와 일치 보장
+    # 나머지(LEAD 시트, drawing, media 등)는 템플릿 원본 사용
     target_xml = _find_sheet_xml(TEMPLATE_PATH, sheet_name)
-    preserve_from_modified = {target_xml, 'xl/sharedStrings.xml'}
+    preserve_from_modified = {target_xml, 'xl/sharedStrings.xml', 'xl/styles.xml'}
 
     with zipfile.ZipFile(TEMPLATE_PATH, 'r') as tmpl_zip, \
          zipfile.ZipFile(buf, 'r') as mod_zip:
