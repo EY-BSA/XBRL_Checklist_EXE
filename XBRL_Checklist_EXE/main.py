@@ -131,10 +131,16 @@ def write_result(result: CheckResult, data, output_path: str):
                 raw = tmpl_zip.read(info.filename)
                 if info.filename in preserve_from_modified and info.filename in mod_names:
                     raw = mod_zip.read(info.filename)
-                    # openpyxl이 제거한 <drawing> 참조를 워크시트 XML에 복원
+                    # openpyxl이 <drawing> 참조를 제거한 경우에만 복원
+                    # (최신 openpyxl은 xmlns:r 인라인 선언과 함께 보존하므로 중복 주입 방지)
                     if info.filename == target_xml and drawing_tags:
-                        inject = b''.join(drawing_tags)
-                        raw = raw.replace(b'</worksheet>', inject + b'</worksheet>')
+                        if not re.search(rb'<drawing\b', raw):
+                            inject = b''.join(drawing_tags)
+                            # r: 네임스페이스가 worksheet 루트에 없으면 인라인 선언 추가
+                            if b'xmlns:r=' not in raw[:raw.find(b'>', raw.find(b'<worksheet'))]:
+                                ns = b' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+                                inject = inject.replace(b'<drawing ', b'<drawing' + ns + b' ')
+                            raw = raw.replace(b'</worksheet>', inject + b'</worksheet>')
                 # [Content_Types].xml 에서 calcChain Override 항목 제거
                 if info.filename == '[Content_Types].xml':
                     raw = re.sub(rb'<Override[^>]*calcChain[^>]*/>', b'', raw)

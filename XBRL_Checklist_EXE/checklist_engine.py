@@ -95,6 +95,114 @@ DIVIDEND_DEPRECATED = {
 # 1-1: Gross 예외 (Node 184 기준)
 GROSS_EXCEPTIONS = {'GrossProfit', 'GrossLoanCommitments'}
 
+# 1-1: Gross Account 목록 (Find-Replace R 인풋)
+GROSS_ACCOUNT_LIST = {
+    'IntangibleAssetsUnderDevelopmentGross',
+    'BuildingsGross',
+    'BuildingIncidentalFacilitiesGross',
+    'ConstructionInProgressGross',
+    'ToolsAndEquipmentGross',
+    'SupplyFacilitiesGross',
+    'ReceivablesOnConstructionContracts',
+    'ExchangeableBonds',
+    'StructureGross',
+    'FinanceLeaseAssetGross',
+    'MachineryGross',
+    'OtherIntangibleAssetsGross',
+    'OtherPropertyPlantAndEquipmentGross',
+    'OtherInventoriesGross',
+    'CurrentFinanceLeaseReceivablesGross',
+    'ShortTermLoans',
+    'ShortTermTradeReceivable',
+    'ShortTermOtherReceivables',
+    'ShortTermAccruedIncome',
+    'ShortTermDueFromCustomersForContractWork',
+    'ShortTermDepositsProvided',
+    'ShortTermPrepaidConstructionCosts',
+    'ShortTermAdvancePayments',
+    'ShortTermPrepaidExpenses',
+    'ShortTermDeferredAncillaryIncomeForLoans',
+    'LeaseholdDeposits',
+    'ReceivablesAgent',
+    'LicencesAndFranchisesGross',
+    'RentalAssetGross',
+    'IntangibleExplorationAndEvaluationAssetsGross',
+    'UnfinishedProgramGross',
+    'GoodsInTransitGross',
+    'ByProductGross',
+    'ReceivablesRealestateSales',
+    'BrandNamesGross',
+    'NonCurrentEmissionRightGross',
+    'NonCurrentBiologicalAssetsGross',
+    'OfficeEquipmentGross',
+    'UsufructContributionAssetGross',
+    'MerchandiseGross',
+    'ShipsGross',
+    'ProductionSuppliesGross',
+    'FittingGross',
+    'ExperimentMaterialGross',
+    'BondWithWarrant',
+    'UtilityModelRightsGross',
+    'GoodwillGross',
+    'FinishedHousingGross',
+    'FinishedProgramGross',
+    'LotGross',
+    'RawMaterialsGross',
+    'CurrentEmissionRight',
+    'CurrentBiologicalAssetsGross',
+    'TangibleExplorationAndEvaluationAssetsGross',
+    'RentStructureGross',
+    'GrossCapitalisedResearchAndDevelopmentExpenseForBioindustry',
+    'LongTermReceivablesOnConstructionContracts',
+    'LongTermAdvancesOnConstructionContracts',
+    'LongTermContractReserve',
+    'NoncurrentFinanceLeaseReceivablesGross',
+    'LongTermOtherGuaranteeDepositReceivedGross',
+    'LongTermLoansGross',
+    'LongTermReceivablesAgent',
+    'LongTermTradePayablesGross',
+    'LongTermTradeAndOtherNonCurrentReceivablesGross',
+    'LongTermTradeReceivablesGross',
+    'LongTermOtherReceivablesGross',
+    'LongTermAccruedIncomeGross',
+    'LongTermOtherPayablesGross',
+    'LongTermAccruedExpensesGross',
+    'LongTermDueFromCustomersForContractWork',
+    'LongTermDepositsProvidedGross',
+    'LongTermReceivablesRealestateSales',
+    'LongTermAdvancePaymentsGross',
+    'LongTermPrepaidExpenses',
+    'LongTermAdvancesCustomers',
+    'LongTermRentReceivedInAdvance',
+    'LongTermWithholdingsBanks',
+    'LongTermGuaranteeDepositWithholdings',
+    'LongTermDeferredAncillaryIncomeForLoans',
+    'DeferredIncomeClassifiedAsNoncurrent',
+    'LongTermGuaranteeDepositRentGross',
+    'LongTermLeaseholdDeposits',
+    'LongTermBorrowingsGross',
+    'WorkInProgressGross',
+    'CopyrightsPatentsAndOtherIndustrialPropertyRightsServiceAndOperatingRightsGross',
+    'SuppliesGross',
+    'ElectronicAutomationDevelopmentGross',
+    'ElectronicFacilitiesGross',
+    'TelexAndTelephoneSubscriptionRights',
+    'ConvertibleBonds',
+    'ConvertibleRedeemablePreferredStockLiabilities',
+    'FinishedGoodsGross',
+    'MastheadsAndPublishingTitlesGross',
+    'RecipesFormulaeModelsDesignsAndPrototypesGross',
+    'FixturesAndFittingsGross',
+    'VehiclesGross',
+    'LandRightGross',
+    'MiningRightsGross',
+    'ComputerSoftwareGross',
+    'LandGross',
+    'LandUseRightGross',
+    'InvestmentPropertyGross',
+    'CashAndCashEquivalentsGross',
+}
+
 # 5-4: EPS 요소명 패턴
 EPS_NAMES = ('BasicEarningsLossPerShare', 'DilutedEarningsLossPerShare',
              'BasicEarningsPerShare', 'DilutedEarningsPerShare')
@@ -202,21 +310,18 @@ def _c1_1(rows, data):
 
     Alteryx 로직 (Node 562→554→184):
       GrossProfit/GrossLoanCommitments 제외
-      !IsNull([Gross Account])  : 표준 택소노미 Gross Account 룩업에 걸리는 요소
-      Contains([Label Role], "total") : totalLabel 사용 요소 추가 필터
+      !IsNull([Gross Account])  : GROSS_ACCOUNT_LIST 룩업에 걸리는 요소
+      Contains([Label Role], "total") → F : totalLabel 미사용 요소를 이슈로 검출
     """
     r = CheckResult('Checklist_1-1')
     for row in rows:
         name = row.get('Name', '')
         if any(exc in name for exc in GROSS_EXCEPTIONS):
             continue
-        if 'Gross' not in name:
+        if name not in GROSS_ACCOUNT_LIST:
             continue
-        lbl_role = row.get('Label Role', '').lower()
-        if 'total' in lbl_role:
-            r.issues.append(_mk(row, 'Gross 계정 totalLabel 사용 — Net 사용 검토 필요', data))
-        elif name == 'GrossCarryingAmountMember':
-            r.issues.append(_mk(row, 'GrossCarryingAmountMember 사용 — Gross 계정 검토 필요', data))
+        if 'total' not in row.get('Label Role', '').lower():
+            r.issues.append(_mk(row, 'Gross 계정 totalLabel 미사용 — Net 사용 검토 필요', data))
     return r
 
 
