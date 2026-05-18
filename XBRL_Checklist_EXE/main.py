@@ -1,6 +1,6 @@
 """
-XBRL CoE Checklist 1-1 체커 (독립 실행형)
-IxD 편집기 '구조내려받기' xlsx → 1-1 Gross 계정 사용 검토 → XBRL_CoE_Checklist_Result.xlsx 저장
+XBRL CoE Checklist (독립 실행형)
+IxD 편집기 '구조내려받기' xlsx → 전체 검증 (1-1 ~ 7-2) → XBRL_CoE_Checklist_Result.xlsx 저장
 """
 
 import io
@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 import openpyxl
 
 from taxonomy_xlsx_parser import parse_taxonomy_xlsx
-from checklist_engine import _c1_1, CheckResult
+from checklist_engine import run_all_checks, CheckResult
 from standard_taxonomy import StandardTaxonomy, enrich_axis_domain_check
 
 
@@ -29,7 +29,7 @@ AXIS_DOMAIN_PATH = resource_path('Axis_Domain_Check.xlsx')
 TEMPLATE_PATH    = resource_path(os.path.join('template', 'XBRL_CoE_Checklist_Result.xlsx'))
 
 
-# ─── 엑셀 출력 ────────────────────────────────────────────────────────────────
+# ─── 엑셀 출력 헬퍼 ──────────────────────────────────────────────────────────
 
 def _role_def(iss) -> str:
     rc = iss.role_code; ko = iss.role_name_ko; en = iss.role_name_en
@@ -39,7 +39,7 @@ def _role_def(iss) -> str:
 
 
 def _table_name(iss) -> str:
-    return iss.table_label_ko or iss.role_name_ko or iss.role_code
+    return iss.table_name_ko or iss.role_name_ko or iss.role_code
 
 
 def _find_sheet_xml(xlsx_path: str, sheet_name: str) -> str:
@@ -48,7 +48,6 @@ def _find_sheet_xml(xlsx_path: str, sheet_name: str) -> str:
         wb_xml   = z.read('xl/workbook.xml').decode('utf-8')
         rels_xml = z.read('xl/_rels/workbook.xml.rels').decode('utf-8')
 
-    # <sheet> 태그에서 name 속성으로 r:id 추출 (속성 순서 무관)
     escaped = re.escape(sheet_name)
     m = re.search(rf'<sheet\b[^>]*\bname="{escaped}"[^>]*/>', wb_xml)
     if not m:
@@ -58,7 +57,6 @@ def _find_sheet_xml(xlsx_path: str, sheet_name: str) -> str:
         raise KeyError(f'<sheet> 태그에서 r:id 추출 실패: {sheet_name}')
     rid = rid_m.group(1)
 
-    # rels 파일에서 Target 추출 (속성 순서 무관)
     m2 = re.search(rf'<Relationship\b[^>]*\bId="{re.escape(rid)}"[^>]*/>', rels_xml)
     if not m2:
         raise KeyError(f'workbook.xml.rels에서 rId 찾기 실패: {rid}')
@@ -68,88 +66,85 @@ def _find_sheet_xml(xlsx_path: str, sheet_name: str) -> str:
     return f'xl/worksheets/{target_m.group(1)}'
 
 
-def write_result(result: CheckResult, data, output_path: str):
-    if not os.path.exists(TEMPLATE_PATH):
-        raise FileNotFoundError(f'템플릿을 찾을 수 없습니다: {TEMPLATE_PATH}')
-
-    sheet_name = result.sheet  # 'Checklist_1-1'
-
-    # Step 1: openpyxl로 데이터 작성 후 메모리 버퍼에 저장
-    wb = openpyxl.load_workbook(TEMPLATE_PATH)
-    if sheet_name not in wb.sheetnames:
-        raise KeyError(f'템플릿에 시트 없음: {sheet_name}')
-
-    ws = wb[sheet_name]
-
-    # 14행 이후 기존 데이터 클리어
+def _write_sheet(ws, result: CheckResult):
+    """openpyxl worksheet 객체에 검증 결과를 기록한다."""
     if ws.max_row >= 14:
         for row in ws.iter_rows(min_row=14, max_row=ws.max_row):
             for cell in row:
                 cell.value = None
 
-    # 이슈 기록 (14행~)
     for ri, iss in enumerate(result.issues, 14):
-        ws.cell(ri, 2, _role_def(iss))          # B: Role Definition
-        ws.cell(ri, 3, _table_name(iss))         # C: TABLE NAME
-        ws.cell(ri, 4, iss.prefix)               # D: Prefix
-        ws.cell(ri, 5, iss.element_name)         # E: Name
-        ws.cell(ri, 6, iss.label_ko)             # F: Label(KO)
-        ws.cell(ri, 7, iss.label_en)             # G: Label(EN)
-        ws.cell(ri, 8, iss.label_role)           # H: Label Role
-        ws.cell(ri, 9, iss.data_type)            # I: DataType
-        ws.cell(ri, 10, iss.period)              # J: Period
+        ws.cell(ri, 2, _role_def(iss))
+        ws.cell(ri, 3, _table_name(iss))
+        ws.cell(ri, 4, iss.prefix)
+        ws.cell(ri, 5, iss.element_name)
+        ws.cell(ri, 6, iss.label_ko)
+        ws.cell(ri, 7, iss.label_en)
+        ws.cell(ri, 8, iss.label_role)
+        ws.cell(ri, 9, iss.data_type)
+        ws.cell(ri, 10, iss.period)
 
-    # B11에 건수를 정적 값으로 기록 (openpyxl은 수식 미계산 → LEAD 참조 셀이 0으로 표시되는 문제 방지)
     ws['B11'] = result.issue_count
+
+
+def write_all_results(results: dict, output_path: str):
+    """모든 체크 결과를 템플릿 기반 xlsx에 기록한다."""
+    if not os.path.exists(TEMPLATE_PATH):
+        raise FileNotFoundError(f'템플릿을 찾을 수 없습니다: {TEMPLATE_PATH}')
+
+    # Step 1: openpyxl로 모든 시트에 데이터 기록 후 메모리 버퍼에 저장
+    wb = openpyxl.load_workbook(TEMPLATE_PATH)
+    for check_id, result in results.items():
+        sheet_name = result.sheet
+        if sheet_name not in wb.sheetnames:
+            continue
+        _write_sheet(wb[sheet_name], result)
 
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
 
-    # Step 2: 템플릿 기반으로 출력 파일 구성
-    # openpyxl 출력에서 가져올 파일: 수정된 시트 XML + sharedStrings + styles
-    # styles.xml도 openpyxl 버전 사용 → 시트 XML의 스타일 ID와 일치 보장
-    # 나머지(LEAD 시트, drawing, media 등)는 템플릿 원본 사용
-    target_xml = _find_sheet_xml(TEMPLATE_PATH, sheet_name)
-    preserve_from_modified = {target_xml, 'xl/sharedStrings.xml', 'xl/styles.xml'}
+    # Step 2: 수정된 시트 XML 목록 수집 (그리기/그림 복원 위해 템플릿 drawing 태그 보존)
+    modified_xmls: dict[str, list] = {}  # xml_path → drawing_tags
+    for check_id, result in results.items():
+        try:
+            xml_path = _find_sheet_xml(TEMPLATE_PATH, result.sheet)
+        except KeyError:
+            continue
+        with zipfile.ZipFile(TEMPLATE_PATH, 'r') as z:
+            try:
+                raw = z.read(xml_path)
+                tags = re.findall(rb'<drawing[^>]*/>', raw)
+                modified_xmls[xml_path] = tags
+            except KeyError:
+                modified_xmls[xml_path] = []
+
+    preserve_from_modified = set(modified_xmls.keys()) | {'xl/sharedStrings.xml', 'xl/styles.xml'}
 
     with zipfile.ZipFile(TEMPLATE_PATH, 'r') as tmpl_zip, \
          zipfile.ZipFile(buf, 'r') as mod_zip:
         mod_names = set(mod_zip.namelist())
 
-        # 템플릿 worksheet XML에서 <drawing> 참조 태그 추출
-        # openpyxl은 저장 시 이 태그를 제거하므로, 나중에 다시 주입해야 도형이 유지됨
-        tmpl_sheet_raw = tmpl_zip.read(target_xml)
-        drawing_tags = re.findall(rb'<drawing[^>]*/>', tmpl_sheet_raw)
-
         with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as out_zip:
             for info in tmpl_zip.infolist():
-                # calcChain 제거: B11을 정적 값으로 교체해 수식 구조가 바뀌었으므로
-                # Excel이 파일 열 때 전체 재계산하도록 강제
                 if info.filename == 'xl/calcChain.xml':
                     continue
                 raw = tmpl_zip.read(info.filename)
                 if info.filename in preserve_from_modified and info.filename in mod_names:
                     raw = mod_zip.read(info.filename)
-                    # openpyxl이 <drawing> 참조를 제거한 경우에만 복원
-                    # (최신 openpyxl은 xmlns:r 인라인 선언과 함께 보존하므로 중복 주입 방지)
-                    if info.filename == target_xml and drawing_tags:
-                        if not re.search(rb'<drawing\b', raw):
+                    # openpyxl이 drawing 태그를 제거한 경우에만 복원 (중복 방지)
+                    if info.filename in modified_xmls:
+                        drawing_tags = modified_xmls[info.filename]
+                        if drawing_tags and not re.search(rb'<drawing\b', raw):
                             inject = b''.join(drawing_tags)
-                            # r: 네임스페이스가 worksheet 루트에 없으면 인라인 선언 추가
                             if b'xmlns:r=' not in raw[:raw.find(b'>', raw.find(b'<worksheet'))]:
                                 ns = b' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
                                 inject = inject.replace(b'<drawing ', b'<drawing' + ns + b' ')
                             raw = raw.replace(b'</worksheet>', inject + b'</worksheet>')
-                # [Content_Types].xml 에서 calcChain Override 항목 제거
                 if info.filename == '[Content_Types].xml':
                     raw = re.sub(rb'<Override[^>]*calcChain[^>]*/>', b'', raw)
-                # workbook.xml 에 fullCalcOnLoad="1" 추가
-                # → Excel이 파일 열 때 캐시 값을 무시하고 모든 수식을 재계산
                 if info.filename == 'xl/workbook.xml':
-                    raw = re.sub(
-                        rb'<calcPr([^/]*)/>', rb'<calcPr\1 fullCalcOnLoad="1"/>', raw
-                    )
+                    raw = re.sub(rb'<calcPr([^/]*)/>', rb'<calcPr\1 fullCalcOnLoad="1"/>', raw)
                 out_zip.writestr(info, raw)
 
 
@@ -161,13 +156,12 @@ def run_check(input_path: str):
 
     data = parse_taxonomy_xlsx(xlsx_bytes)
 
-    # Axis_Domain_Check 로드 (내장 파일)
     std = StandardTaxonomy()
     if os.path.exists(AXIS_DOMAIN_PATH):
         enrich_axis_domain_check(std, AXIS_DOMAIN_PATH)
 
-    result = _c1_1(data.presentation_rows, data)
-    return data, result
+    results = run_all_checks(data, std)
+    return data, results
 
 
 # ─── GUI ──────────────────────────────────────────────────────────────────────
@@ -175,7 +169,7 @@ def run_check(input_path: str):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('XBRL CoE Checklist 1-1')
+        self.title('XBRL CoE Checklist')
         self.resizable(False, False)
         self._build_ui()
         self._center()
@@ -190,7 +184,7 @@ class App(tk.Tk):
         pad = {'padx': 16, 'pady': 8}
 
         tk.Label(self, text='XBRL CoE Checklist', font=('Helvetica', 15, 'bold')).pack(**pad)
-        tk.Label(self, text='1-1  Gross 계정 사용 검토', font=('Helvetica', 11)).pack(pady=(0, 4))
+        tk.Label(self, text='전체 검증  1-1 ~ 7-2  (29개 체크)', font=('Helvetica', 11)).pack(pady=(0, 4))
         tk.Label(
             self,
             text='IxD 편집기 [구조내려받기] xlsx 파일을 선택하세요.',
@@ -238,23 +232,26 @@ class App(tk.Tk):
 
     def _worker(self):
         try:
-            data, result = run_check(self._input_path)
-            self.after(0, self._on_done, data, result)
+            data, results = run_check(self._input_path)
+            self.after(0, self._on_done, data, results)
         except Exception as exc:
             self.after(0, self._on_error, str(exc))
 
-    def _on_done(self, data, result):
+    def _on_done(self, data, results):
         self._progress.stop()
+
+        total_issues = sum(r.issue_count for r in results.values())
+        checks_with_issues = sum(1 for r in results.values() if not r.passed)
 
         company = data.company_name or 'XBRL'
         rdate   = (data.report_date or '').replace('/', '').replace('-', '')
         parts   = [p for p in [company, rdate] if p]
         default_name = f"XBRL_CoE_Checklist_Result_{'_'.join(parts)}.xlsx"
 
-        issue_cnt = result.issue_count
-        msg = (f'이슈 {issue_cnt}건 발견 되었습니다.\n결과 파일을 저장할 위치를 선택하세요.'
-               if issue_cnt else
-               '이슈 없음 (Pass). 결과 파일을 저장할 위치를 선택하세요.')
+        if total_issues:
+            msg = f'이슈 {total_issues}건 발견 ({checks_with_issues}개 항목).\n결과 파일을 저장할 위치를 선택하세요.'
+        else:
+            msg = '이슈 없음 (전체 Pass). 결과 파일을 저장할 위치를 선택하세요.'
         self._status.set(msg)
 
         output_path = filedialog.asksaveasfilename(
@@ -269,12 +266,21 @@ class App(tk.Tk):
             return
 
         try:
-            write_result(result, data, output_path)
+            write_all_results(results, output_path)
             self._status.set(f'저장 완료: {os.path.basename(output_path)}')
+
+            # 시트별 요약 문자열
+            summary_lines = []
+            for cid, res in results.items():
+                if not res.passed:
+                    summary_lines.append(f'  {cid}: {res.issue_count}건')
+            summary_str = '\n'.join(summary_lines) if summary_lines else '  (없음)'
+
             messagebox.showinfo(
                 '완료',
-                f'1-1 체크 완료\n'
-                f'이슈 건수: {issue_cnt}건\n\n'
+                f'전체 검증 완료\n'
+                f'총 이슈: {total_issues}건 / {checks_with_issues}개 항목\n\n'
+                f'이슈 발생 항목:\n{summary_str}\n\n'
                 f'저장 위치:\n{output_path}'
             )
         except Exception as exc:

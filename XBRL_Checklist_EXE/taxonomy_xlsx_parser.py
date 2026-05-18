@@ -43,14 +43,17 @@ def _safe(v) -> str:
 
 def _classify_element(gubn_raw: str, name: str) -> str:
     """가이드 2.2 - Element 분류 (Name 끝 4글자 기준)"""
-    if 'lineitem' in name.lower(): return 'item'
-    if gubn_raw.strip().upper() == 'FOOTNOTES': return 'FOOTNOTES'
     suffix = name[-4:].lower() if len(name) >= 4 else ''
-    return {
+    element = {
         'tory': 'Explanatory', 'ract': 'Abstract',
         'axis': 'Axis',        'lock': 'TextBlock',
         'able': 'Table',       'mber': 'Member',
     }.get(suffix, 'item')
+    if 'lineitem' in name.lower():
+        element = 'Lineitem'
+    if gubn_raw.strip().upper() == 'FOOTNOTES':
+        element = 'FOOTNOTES'
+    return element
 
 
 def _classify_gubn(gubn_raw: str, name: str) -> str:
@@ -77,6 +80,7 @@ class TaxonomyXlsxData:
         self.elements:Dict[str,object]={}
         self.contexts:Dict[str,object]={}
         self.facts=[]; self._fact_elements:set=set()
+        self.axis_domain_rows=[]
 
 
 def parse_taxonomy_xlsx(file_bytes: bytes) -> TaxonomyXlsxData:
@@ -108,15 +112,17 @@ def parse_taxonomy_xlsx(file_bytes: bytes) -> TaxonomyXlsxData:
         name_ko   = re.sub(r'^\[[^\]]+\]\s*', '', parts[0]).strip()
         name_en   = parts[1].strip() if len(parts)>1 else ''
         is_c      = _is_consol(role_def or role_uri)
+        if is_c is None and code:
+            if code[-1] == '0':   is_c = True
+            elif code[-1] == '5': is_c = False
 
-        # 연결/별도: Role Definition 7번째 자리 (가이드 2.2)
+        # 연결/별도: code 끝자리 기준
         consol_str = '-'
-        if role_def and len(role_def) >= 7:
-            ch = role_def[6]
-            if ch == '0':   consol_str = '연결'
-            elif ch == '5': consol_str = '별도'
+        if code:
+            if code[-1] == '0':   consol_str = '연결'
+            elif code[-1] == '5': consol_str = '별도'
 
-        current_table_label = ''  # 시트 내 현재 TABLE 행의 Label(KO) 추적
+        current_table_name_ko = ''  # 시트 내 현재 TABLE 행의 Label(KO) 추적
         for i in range(header_idx + 1, len(df)):
             row = df.iloc[i]
             def col(j): return _safe(row.iloc[j]) if len(row)>j else ''
@@ -126,7 +132,9 @@ def parse_taxonomy_xlsx(file_bytes: bytes) -> TaxonomyXlsxData:
             decimal_val=col(9); fact_val=col(10)
 
             if not name: continue
-            if gubn_raw == '구분': continue  # 시트 내 반복 헤더 행 건너뜀
+            if name in ('Name', 'Prefix', '구분', 'Label(KO)', 'Label(EN)',
+                        'Label Role', 'DataType', 'Balance', 'Period',
+                        'Decimal', 'Fact'): continue
 
             gubn    = _classify_gubn(gubn_raw, name)
             element = _classify_element(gubn_raw, name)
@@ -136,7 +144,7 @@ def parse_taxonomy_xlsx(file_bytes: bytes) -> TaxonomyXlsxData:
 
             # TABLE 행을 만날 때마다 현재 테이블 이름 갱신 (다중 테이블 지원)
             if gubn == 'TABLE':
-                current_table_label = lbl_ko
+                current_table_name_ko = lbl_ko
 
             # 가이드 기준: 비확장 = '-', 확장 = '확장'
             ext = '확장' if prefix.startswith('entity') else '-'
@@ -165,11 +173,71 @@ def parse_taxonomy_xlsx(file_bytes: bytes) -> TaxonomyXlsxData:
                 '확장여부': ext, 'Client_Negate': client_negate, '별칭여부': alias,
                 'PreferredLabel': lbl_role_url,
                 'has_fact': has_fact, 'abstract': False,
-                'table_label_ko': current_table_label,
+                'table_name_ko': current_table_name_ko,
             })
 
+    _add_axis_group_fields(rows)
     data.presentation_rows = rows
+    data.axis_domain_rows = [r for r in rows if r.get('GroupID') is not None]
     return data
+
+
+def _add_axis_group_fields(rows: list):
+    """3-1, 3-2 체크용 축-도메인 그룹핑 필드 추가 (role_uri 기준 순차 처리)"""
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+    for i, row in enumerate(rows):
+        groups[row.get('role_uri', '')].append((i, row))
+
+    for _, indexed_rows in groups.items():
+        prev_element     = None
+        prev_axis_domain = None
+        prev_group_id    = None
+        prev_axis_name   = None
+
+        for _, (orig_idx, row) in enumerate(indexed_rows):
+            element = row.get('Element', '')
+
+            if prev_element == 'Axis' and element == 'Member':
+                axis_domain = '도메인'
+            elif element == 'Axis':
+                axis_domain = '축'
+            elif element == 'Member' and prev_axis_domain in ('축', '도메인', '멤버'):
+                axis_domain = '멤버'
+            else:
+                axis_domain = None
+
+            axis_flag = 1 if axis_domain == '축' else 0
+
+            if axis_domain is None:
+                group_id = None
+            elif axis_flag == 1:
+                group_id = 1 if prev_group_id is None else prev_group_id + 1
+            else:
+                group_id = prev_group_id
+
+            if axis_domain is None:
+                axis_name = None
+            elif prev_group_id is None or group_id != prev_group_id:
+                axis_name = row.get('Name', '') if axis_domain == '축' else ''
+            else:
+                axis_name = row.get('Name', '') if axis_domain == '축' else prev_axis_name
+
+            key = f"{axis_name}-{row.get('Name', '')}" if axis_domain is not None and axis_name else None
+
+            rows[orig_idx].update({
+                '축_도메인': axis_domain,
+                'Axis_flag': axis_flag,
+                'Axis_Name': axis_name,
+                'GroupID':   group_id,
+                'KEY_axis':  key,
+            })
+
+            prev_element     = element
+            prev_axis_domain = axis_domain
+            prev_group_id    = group_id
+            prev_axis_name   = axis_name
 
 
 def _parse_basic_info(df, data: TaxonomyXlsxData):
