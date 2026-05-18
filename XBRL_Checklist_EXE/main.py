@@ -135,6 +135,10 @@ def write_all_results(results: dict, output_path: str):
                 modified_xmls[xml_path] = []
 
     preserve_from_modified = set(modified_xmls.keys()) | {'xl/sharedStrings.xml', 'xl/styles.xml'}
+    # 수정된 시트의 rels 파일도 openpyxl 버전 사용 (rId 재번호 부여 동기화)
+    for xml_path in modified_xmls.keys():
+        parts = xml_path.rsplit('/', 1)
+        preserve_from_modified.add(f'{parts[0]}/_rels/{parts[1]}.rels')
 
     with zipfile.ZipFile(TEMPLATE_PATH, 'r') as tmpl_zip, \
          zipfile.ZipFile(buf, 'r') as mod_zip:
